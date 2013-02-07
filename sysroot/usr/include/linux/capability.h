@@ -7,7 +7,7 @@
  *
  * See here for the libcap library ("POSIX draft" compliance):
  *
- * ftp://linux.kernel.org/pub/linux/libs/security/linux-privs/kernel-2.6/
+ * ftp://www.kernel.org/pub/linux/libs/security/linux-privs/kernel-2.6/
  */
 
 #ifndef _LINUX_CAPABILITY_H
@@ -22,13 +22,20 @@ struct task_struct;
    kernel might be somewhat backwards compatible, but don't bet on
    it. */
 
-/* XXX - Note, cap_t, is defined by POSIX to be an "opaque" pointer to
+/* Note, cap_t, is defined by POSIX (draft) to be an "opaque" pointer to
    a set of three capability sets.  The transposition of 3*the
    following structure to such a composite is better handled in a user
    library since the draft standard requires the use of malloc/free
    etc.. */
 
-#define _LINUX_CAPABILITY_VERSION  0x19980330
+#define _LINUX_CAPABILITY_VERSION_1  0x19980330
+#define _LINUX_CAPABILITY_U32S_1     1
+
+#define _LINUX_CAPABILITY_VERSION_2  0x20071026  /* deprecated - use v3 */
+#define _LINUX_CAPABILITY_U32S_2     2
+
+#define _LINUX_CAPABILITY_VERSION_3  0x20080522
+#define _LINUX_CAPABILITY_U32S_3     2
 
 typedef struct __user_cap_header_struct {
 	__u32 version;
@@ -41,23 +48,40 @@ typedef struct __user_cap_data_struct {
         __u32 inheritable;
 } *cap_user_data_t;
 
-#define XATTR_CAPS_SUFFIX "capability"
-#define XATTR_NAME_CAPS XATTR_SECURITY_PREFIX XATTR_CAPS_SUFFIX
 
-#define XATTR_CAPS_SZ (3*sizeof(__le32))
 #define VFS_CAP_REVISION_MASK	0xFF000000
-#define VFS_CAP_REVISION_1	0x01000000
-
-#define VFS_CAP_REVISION	VFS_CAP_REVISION_1
-
+#define VFS_CAP_REVISION_SHIFT	24
 #define VFS_CAP_FLAGS_MASK	~VFS_CAP_REVISION_MASK
 #define VFS_CAP_FLAGS_EFFECTIVE	0x000001
 
+#define VFS_CAP_REVISION_1	0x01000000
+#define VFS_CAP_U32_1           1
+#define XATTR_CAPS_SZ_1         (sizeof(__le32)*(1 + 2*VFS_CAP_U32_1))
+
+#define VFS_CAP_REVISION_2	0x02000000
+#define VFS_CAP_U32_2           2
+#define XATTR_CAPS_SZ_2         (sizeof(__le32)*(1 + 2*VFS_CAP_U32_2))
+
+#define XATTR_CAPS_SZ           XATTR_CAPS_SZ_2
+#define VFS_CAP_U32             VFS_CAP_U32_2
+#define VFS_CAP_REVISION	VFS_CAP_REVISION_2
+
 struct vfs_cap_data {
-	__u32 magic_etc;  /* Little endian */
-	__u32 permitted;    /* Little endian */
-	__u32 inheritable;  /* Little endian */
+	__le32 magic_etc;            /* Little endian */
+	struct {
+		__le32 permitted;    /* Little endian */
+		__le32 inheritable;  /* Little endian */
+	} data[VFS_CAP_U32];
 };
+
+
+/*
+ * Backwardly compatible definition for source code - trapped in a
+ * 32-bit world. If you find you need this, please consider using
+ * libcap to untrap yourself...
+ */
+#define _LINUX_CAPABILITY_VERSION  _LINUX_CAPABILITY_VERSION_1
+#define _LINUX_CAPABILITY_U32S     _LINUX_CAPABILITY_U32S_1
 
 
 
@@ -98,10 +122,6 @@ struct vfs_cap_data {
 
 #define CAP_FSETID           4
 
-/* Used to decide between falling back on the old suser() or fsuser(). */
-
-#define CAP_FS_MASK          0x1f
-
 /* Overrides the restriction that the real or effective user ID of a
    process sending a signal must match the real or effective user ID
    of the process receiving the signal. */
@@ -124,8 +144,15 @@ struct vfs_cap_data {
  ** Linux-specific capabilities
  **/
 
-/* Transfer any capability in your permitted set to any pid,
-   remove any capability in your permitted set from any pid */
+/* Without VFS support for capabilities:
+ *   Transfer any capability in your permitted set to any pid,
+ *   remove any capability in your permitted set from any pid
+ * With VFS support for capabilities (neither of above, but)
+ *   Add any capability from current's capability bounding set
+ *       to the current process' inheritable set
+ *   Allow taking bits out of capability bounding set
+ *   Allow modification of the securebits for a process
+ */
 
 #define CAP_SETPCAP          8
 
@@ -148,7 +175,7 @@ struct vfs_cap_data {
 /* Allow modification of routing tables */
 /* Allow setting arbitrary process / process group ownership on
    sockets */
-/* Allow binding to any address for transparent proxying */
+/* Allow binding to any address for transparent proxying (also via NET_RAW) */
 /* Allow setting TOS (type of service) */
 /* Allow setting promiscuous mode */
 /* Allow clearing driver statistics */
@@ -160,6 +187,7 @@ struct vfs_cap_data {
 
 /* Allow use of RAW sockets */
 /* Allow use of PACKET sockets */
+/* Allow binding to any address for transparent proxying (also via NET_ADMIN) */
 
 #define CAP_NET_RAW          13
 
@@ -174,7 +202,6 @@ struct vfs_cap_data {
 #define CAP_IPC_OWNER        15
 
 /* Insert and remove kernel modules - modify kernel without limit */
-/* Modify cap_bset */
 #define CAP_SYS_MODULE       16
 
 /* Allow ioperm/iopl access */
@@ -197,7 +224,6 @@ struct vfs_cap_data {
 /* Allow configuration of the secure attention key */
 /* Allow administration of the random device */
 /* Allow examination and configuration of disk quotas */
-/* Allow configuring the kernel's syslog (printk behaviour) */
 /* Allow setting the domainname */
 /* Allow setting the hostname */
 /* Allow calling bdflush() */
@@ -285,6 +311,43 @@ struct vfs_cap_data {
 #define CAP_AUDIT_CONTROL    30
 
 #define CAP_SETFCAP	     31
+
+/* Override MAC access.
+   The base kernel enforces no MAC policy.
+   An LSM may enforce a MAC policy, and if it does and it chooses
+   to implement capability based overrides of that policy, this is
+   the capability it should use to do so. */
+
+#define CAP_MAC_OVERRIDE     32
+
+/* Allow MAC configuration or state changes.
+   The base kernel requires no MAC configuration.
+   An LSM may enforce a MAC policy, and if it does and it chooses
+   to implement capability based checks on modifications to that
+   policy or the data required to maintain it, this is the
+   capability it should use to do so. */
+
+#define CAP_MAC_ADMIN        33
+
+/* Allow configuring the kernel's syslog (printk behaviour) */
+
+#define CAP_SYSLOG           34
+
+/* Allow triggering something that will wake the system */
+
+#define CAP_WAKE_ALARM            35
+
+
+#define CAP_LAST_CAP         CAP_WAKE_ALARM
+
+#define cap_valid(x) ((x) >= 0 && (x) <= CAP_LAST_CAP)
+
+/*
+ * Bit location of each capability (used by user-space library and kernel)
+ */
+
+#define CAP_TO_INDEX(x)     ((x) >> 5)        /* 1 << 5 == bits in __u32 */
+#define CAP_TO_MASK(x)      (1 << ((x) & 31)) /* mask for indexed __u32 */
 
 
 #endif /* !_LINUX_CAPABILITY_H */
